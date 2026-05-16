@@ -1,14 +1,24 @@
-# Build directory
-**/build/
+# Build directories
+build
+
+# Firmware configuration
 sdkconfig*
 !sdkconfig.defaults
+
+# Doesn't publish ESP IDF components.
+# Automatically downloaded on build.
 managed_components
+
+# Project is build using ESP IDF Vscode extension.
+# But ignore, as the repo doesn't depend on it.
 .vscode
-components
-usb-input-tinyusb/components/tinyusb
+
+# Ignore custom configuration.
 usb-output/main/config_custom.h
 
- Prerequisites
+## C
+## ---
+# Prerequisites
 *.d
 
 # Object files
