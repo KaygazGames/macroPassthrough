@@ -291,6 +291,12 @@ void macro_posthook_transmission(hid_transmit_t* report){
 
 To add your own logic, simply edit the code between the `// --- START USER CUSTOM MACRO` and `// --- END` comments in the respective functions.
 
+#### Built-in 16 CPS Mouse Click Expansion
+
+`usb-output/main/macpass_macro.c` now includes a posthook mouse macro for `MOUSE_BUTTON_LEFT` and `MOUSE_BUTTON_RIGHT`. When either physical button is held, or when a fast click has just occurred, the USB-output device adds synthetic alternating press/release mouse reports at **16 clicks per second** (one full click every `62500` microseconds, split into half-interval press/release phases). Synthetic timer-generated reports preserve the latest passthrough button state for other mouse buttons, but set `x`, `y`, `wheel`, and `pan` deltas to `0` so timer clicks do not replay stale movement.
+
+To configure or disable this behavior, edit the mouse branch between `// --- START USER CUSTOM MACRO` and `// --- END` in `macro_posthook_transmission()` and the auto-click constants/state near `last_mouse_report` in `usb-output/main/macpass_macro.c`. Only left/right buttons are targeted by default; middle, side buttons, wheel, pan, keyboard reports, and sequence macros remain passthrough-compatible.
+
 ### Developper flow
 
 Here is a sequence diagram showing all the functions that process an HID report, from receipt by a device to the return of an LED report by the PC.

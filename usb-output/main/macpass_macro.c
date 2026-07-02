@@ -3,9 +3,45 @@
 
 hid_keyboard_report_t last_keyboard_report[HISTORY_SIZE];
 hid_mouse_report_t last_mouse_report;
+static uint8_t last_physical_mouse_buttons;
+
+#define AUTO_CLICK_BUTTON_COUNT 2
+#define AUTO_CLICK_INTERVAL_US 62500
+#define AUTO_CLICK_HALF_INTERVAL_US (AUTO_CLICK_INTERVAL_US / 2)
+#define AUTO_CLICK_RECENT_WINDOW_US AUTO_CLICK_INTERVAL_US
+
+typedef struct {
+    uint8_t button_mask;
+    bool active;
+    bool physical_down;
+    bool generated_pressed;
+    bool timer_running;
+    int64_t recent_until;
+    esp_timer_handle_t timer;
+    esp_timer_create_args_t timer_args;
+} mouse_auto_click_t;
+
+static mouse_auto_click_t mouse_auto_clickers[AUTO_CLICK_BUTTON_COUNT] = {
+    {.button_mask = MOUSE_BUTTON_LEFT},
+    {.button_mask = MOUSE_BUTTON_RIGHT},
+};
+
 group_sequence_t group_sequence;
 
+static void mouse_auto_click_callback(void* arg);
+static void start_mouse_auto_click(mouse_auto_click_t* clicker, int64_t now);
+static void stop_mouse_auto_click(mouse_auto_click_t* clicker);
+static void schedule_mouse_auto_click(mouse_auto_click_t* clicker, uint64_t delay_us);
+
 void macro_init(){
+    for (int i = 0; i < AUTO_CLICK_BUTTON_COUNT; i++){
+        mouse_auto_click_t* clicker = &mouse_auto_clickers[i];
+        clicker->timer_args.callback = &mouse_auto_click_callback;
+        clicker->timer_args.arg = clicker;
+        clicker->timer_args.name = clicker->button_mask == MOUSE_BUTTON_LEFT ? "mouse_left_click" : "mouse_right_click";
+        esp_timer_create(&clicker->timer_args, &clicker->timer);
+    }
+
     // Copy sequence
     group_sequence = macro_sequence;
     // For each macro sequence define by the user
@@ -111,6 +147,21 @@ void macro_posthook_transmission(hid_transmit_t* report){
         last_mouse_report = report->event.mouse;
 
         // --- START USER CUSTOM MACRO
+        uint8_t previous_buttons = last_physical_mouse_buttons;
+        uint8_t current_buttons = report->event.mouse.buttons;
+        int64_t now = esp_timer_get_time();
+        for (int i = 0; i < AUTO_CLICK_BUTTON_COUNT; i++){
+            mouse_auto_click_t* clicker = &mouse_auto_clickers[i];
+            bool was_down = (previous_buttons & clicker->button_mask) != 0;
+            bool is_down = (current_buttons & clicker->button_mask) != 0;
+            if (!was_down && is_down){
+                start_mouse_auto_click(clicker, now);
+            } else if (was_down && !is_down){
+                clicker->physical_down = false;
+                clicker->recent_until = now + AUTO_CLICK_RECENT_WINDOW_US;
+            }
+        }
+        last_physical_mouse_buttons = current_buttons;
         // --- END
 
         // Manage sequence start:
@@ -129,6 +180,60 @@ void macro_posthook_transmission(hid_transmit_t* report){
         }
     }
 }
+
+static void schedule_mouse_auto_click(mouse_auto_click_t* clicker, uint64_t delay_us) {
+    if (clicker->timer_running) return;
+    clicker->timer_running = true;
+    esp_timer_start_once(clicker->timer, delay_us);
+}
+
+static void start_mouse_auto_click(mouse_auto_click_t* clicker, int64_t now) {
+    clicker->active = true;
+    clicker->physical_down = true;
+    clicker->generated_pressed = true;
+    clicker->recent_until = now + AUTO_CLICK_RECENT_WINDOW_US;
+    schedule_mouse_auto_click(clicker, AUTO_CLICK_HALF_INTERVAL_US);
+}
+
+static void stop_mouse_auto_click(mouse_auto_click_t* clicker) {
+    if (clicker->timer_running) {
+        esp_timer_stop(clicker->timer);
+        clicker->timer_running = false;
+    }
+    clicker->active = false;
+    clicker->physical_down = false;
+    clicker->generated_pressed = false;
+    clicker->recent_until = 0;
+}
+
+static void mouse_auto_click_callback(void* arg) {
+    mouse_auto_click_t* clicker = (mouse_auto_click_t*) arg;
+    clicker->timer_running = false;
+
+    int64_t now = esp_timer_get_time();
+    if (!clicker->physical_down && now >= clicker->recent_until) {
+        stop_mouse_auto_click(clicker);
+        return;
+    }
+
+    clicker->generated_pressed = !clicker->generated_pressed;
+
+    hid_transmit_t click_report;
+    click_report.header = HEADER_HID_MOUSE;
+    click_report.event.mouse = last_mouse_report;
+    click_report.event.mouse.buttons &= ~clicker->button_mask;
+    if (clicker->generated_pressed) {
+        click_report.event.mouse.buttons |= clicker->button_mask;
+    }
+    click_report.event.mouse.x = 0;
+    click_report.event.mouse.y = 0;
+    click_report.event.mouse.wheel = 0;
+    click_report.event.mouse.pan = 0;
+
+    hid_add_report(click_report);
+    schedule_mouse_auto_click(clicker, AUTO_CLICK_HALF_INTERVAL_US);
+}
+
 
 void macro_sequence_callback(void* arg) {
     // Get the key sequence from arguments
